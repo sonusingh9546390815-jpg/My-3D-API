@@ -1,37 +1,32 @@
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 import requests
-import os
 
 app = FastAPI(title="Advanced 3D Asset Pipeline", description="Powered by Meshy API")
 
-# Render par 'MESHY_API_KEY' environment variable zaroori hai
-MESHY_API_KEY = os.getenv("MESHY_API_KEY")
 MESHY_API_URL = "https://api.meshy.ai/v1/image-to-3d"
 
-# Ek chhota sa temporary database task track karne ke liye
+# Ek chhota database task aur api_key track karne ke liye
 asset_database = {}
 
 @app.get("/")
 def home():
-    return {
-        "message": "Pro 3D Asset Generator Live! 🎮", 
-        "instruction": "Go to /docs to use the App Dashboard"
-    }
+    return {"message": "Pro 3D Asset Generator Live! 🎮", "instruction": "Go to /docs to use the App Dashboard"}
 
 @app.post("/api/upload-and-generate")
 async def create_3d_task(
+    api_key: str = Form(..., description="Meshy.ai se copy ki hui API Key yahan paste karein"),
     asset_category: str = Form(..., description="Daalein: Gun, Character, Building, Tree, etc."),
     file: UploadFile = File(...)
 ):
     """
-    Step 1: Photo upload karein aur Asset ka type batayein.
+    Step 1: Apni API Key, Asset Type aur Photo upload karein.
     """
-    if not MESHY_API_KEY:
-        raise HTTPException(status_code=400, detail="Meshy API Key missing!")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="API Key is required!")
 
     try:
         image_bytes = await file.read()
-        headers = {"Authorization": f"Bearer {MESHY_API_KEY}"}
+        headers = {"Authorization": f"Bearer {api_key}"}
         files = {"image_file": (file.filename, image_bytes, file.content_type)}
         data = {"ai_model": "v2", "topology": "quad", "target_polycount": 30000}
 
@@ -44,10 +39,11 @@ async def create_3d_task(
         result = response.json()
         task_id = result.get("result")
 
-        # Apne server ke database mein record save karna
+        # Database mein task_id ke sath api_key bhi save kar rahe hain
         asset_database[task_id] = {
             "category": asset_category,
-            "filename": file.filename
+            "filename": file.filename,
+            "api_key": api_key
         }
 
         return {
@@ -66,10 +62,14 @@ def check_model_status(task_id: str):
     """
     Step 2: task_id daalkar check karein ki model ready hua ya nahi.
     """
-    if not MESHY_API_KEY:
-        raise HTTPException(status_code=400, detail="Meshy API Key missing!")
+    task_info = asset_database.get(task_id)
+    if not task_info:
+        raise HTTPException(status_code=404, detail="Task ID server par nahi mili. Kripya naya task shuru karein.")
 
-    headers = {"Authorization": f"Bearer {MESHY_API_KEY}"}
+    # Saved api_key ka use karke status check karna
+    api_key = task_info.get("api_key")
+    headers = {"Authorization": f"Bearer {api_key}"}
+    
     response = requests.get(f"{MESHY_API_URL}/{task_id}", headers=headers)
 
     if response.status_code != 200:
@@ -83,20 +83,11 @@ def check_model_status(task_id: str):
         return {
             "task_id": task_id,
             "status": "READY! 🎉",
-            "asset_details": asset_database.get(task_id, "Unknown"),
             "download_link_glb": model_urls.get("glb"),
             "message": "Mubarak ho! Aapka 3D file ready hai. Link copy karke browser mein paste karein aur model download karein."
         }
     elif status == "FAILED":
-        return {
-            "task_id": task_id, 
-            "status": "FAILED ❌", 
-            "error": data.get("task_error")
-        }
+        return {"task_id": task_id, "status": "FAILED ❌", "error": data.get("task_error")}
     else:
         progress = data.get("progress", 0)
-        return {
-            "task_id": task_id,
-            "status": f"PROCESSING ⏳ ({progress}%)",
-            "message": "Meshy AI abhi model bana raha hai. Thodi der baad is endpoint ko dobara execute karein."
-        }
+        return {"task_id": task_id, "status": f"PROCESSING ⏳ ({progress}%)"}
